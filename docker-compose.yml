@@ -1,0 +1,28 @@
+# Postgres for the shop. The volume is disposable: `./run.sh reset` drops it and the
+# init scripts reseed from scratch, so order ids are always 1..17 (EVALS §2).
+services:
+  db:
+    image: postgres:16
+    container_name: cs_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TOOLBOX_DB_USER: ${TOOLBOX_DB_USER}
+      TOOLBOX_DB_PASSWORD: ${TOOLBOX_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/01_seed.sql:ro
+      - ./db/roles.sh:/docker-entrypoint-initdb.d/02_roles.sh:ro
+    # TCP, not the socket: during init Postgres runs a socket-only temporary server, and the
+    # check must not report healthy before the seed has finished.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
