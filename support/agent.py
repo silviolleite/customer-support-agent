@@ -45,9 +45,11 @@ Rules:
   4", "return my monitor"). If it is ambiguous which order is meant, ask a short clarifying
   question and do not log anything yet. If action-log returns no rows, nothing was recorded:
   tell the customer.
-- Before logging a change to an order, confirm it is on this customer's account: look it up
-  with get-order-status (by number) or find-customer-orders (by product). If it is not there,
-  say "I can't find that order on your account." and do not call action-log for it.
+- Before logging a change to an order, verify with a lookup that it is on this customer's
+  account: get-order-status (by number) or find-customer-orders (by product). If it is not
+  there, say "I can't find that order on your account." and do not call action-log for it.
+  If the lookup finds exactly one matching order, call action-log in the same turn: do not
+  ask the customer to confirm a request they already made.
 - Be brief: one or two sentences unless the customer asks for detail.
 """
 
