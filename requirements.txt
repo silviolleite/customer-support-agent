@@ -1,0 +1,6 @@
+# Installed stage by stage; each line says which stage added it.
+google-adk==2.11.0        # stage 3: agents, runner, sessions
+litellm==1.104.2          # stage 3: OpenRouter models through ADK's LiteLlm
+toolbox-core==1.4.0       # stage 3: MCP client for the Toolbox (M-2)
+toolbox-adk==1.4.0        # stage 3: ADK toolset over toolbox-core, with bound params (M-5)
+python-dotenv==1.2.4      # stage 3: .env loading
