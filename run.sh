@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One entry point for every service, started in dependency order (TECHNICAL §5).
-# Stage 2: database + MCP Toolbox. Later stages add Judge, Masker, Phoenix, web.
+# Stage 5: database, MCP Toolbox, Phoenix. Later stages add Judge, Masker, web.
 # Background services write logs/<name>.log and logs/<name>.pid.
 #
 #   ./run.sh start    start every service, waiting for each to be healthy
@@ -87,11 +87,50 @@ toolbox_status() {
   if toolbox_healthy; then ok "toolbox on :${TOOLBOX_PORT}"; else fail "toolbox down"; return 1; fi
 }
 
+# --- Phoenix ----------------------------------------------------------------
+# Its own long-lived process with storage in .phoenix/, so traces outlive the agent (O-1,
+# R-10). It runs from .venv-phoenix so its dependencies never fight ADK's OpenTelemetry pins.
+PHOENIX_PORT=6006
+
+phoenix_healthy() {
+  curl -sf "http://127.0.0.1:${PHOENIX_PORT}/healthz" >/dev/null
+}
+
+phoenix_start() {
+  if phoenix_healthy; then ok "phoenix on :${PHOENIX_PORT}"; return 0; fi
+  if [[ ! -x .venv-phoenix/bin/phoenix ]]; then
+    fail "phoenix not installed: python3 -m venv .venv-phoenix && .venv-phoenix/bin/pip install arize-phoenix"
+    exit 1
+  fi
+  mkdir -p logs .phoenix
+  PHOENIX_WORKING_DIR="$PWD/.phoenix" PHOENIX_HOST=127.0.0.1 PHOENIX_PORT="${PHOENIX_PORT}" \
+    setsid nohup .venv-phoenix/bin/phoenix serve >logs/phoenix.log 2>&1 &
+  echo $! >logs/phoenix.pid
+  printf '  waiting for phoenix'
+  for _ in $(seq 1 90); do
+    if phoenix_healthy; then echo; ok "phoenix on :${PHOENIX_PORT}"; return 0; fi
+    printf '.'; sleep 1
+  done
+  echo; fail "phoenix did not start"; tail -20 logs/phoenix.log; exit 1
+}
+
+phoenix_stop() {
+  if [[ -f logs/phoenix.pid ]]; then
+    kill -- "-$(cat logs/phoenix.pid)" 2>/dev/null || true
+    rm -f logs/phoenix.pid
+  fi
+}
+
+phoenix_status() {
+  if phoenix_healthy; then ok "phoenix on :${PHOENIX_PORT}"; else fail "phoenix down"; return 1; fi
+}
+
 # --- commands ---------------------------------------------------------------
 case "${1:-}" in
-  start)  db_start; toolbox_start ;;
-  stop)   toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
-  status) rc=0; db_status || rc=1; toolbox_status || rc=1; exit $rc ;;
+  start)  db_start; toolbox_start; phoenix_start ;;
+  # The CLI never stops Phoenix; only this explicit command does (O-1).
+  stop)   phoenix_stop; toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
+  status) rc=0; db_status || rc=1; toolbox_status || rc=1; phoenix_status || rc=1; exit $rc ;;
   # The Toolbox's connections die with the old database, so it restarts with it.
   reset)  toolbox_stop; db_reset; toolbox_start ;;
   psql)   shift; psql_admin "$@" ;;

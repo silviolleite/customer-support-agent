@@ -4,3 +4,7 @@ litellm==1.104.2          # stage 3: OpenRouter models through ADK's LiteLlm
 toolbox-core==1.4.0       # stage 3: MCP client for the Toolbox (M-2)
 toolbox-adk==1.4.0        # stage 3: ADK toolset over toolbox-core, with bound params (M-5)
 python-dotenv==1.2.4      # stage 3: .env loading
+opentelemetry-exporter-otlp-proto-http==1.42.1   # stage 5: spans to Phoenix (same version as ADK's otel)
+openinference-instrumentation-litellm==0.1.50    # stage 5: LLM call spans with prompts and tokens (O-3, via LiteLLM)
+openinference-semantic-conventions==0.1.41       # stage 5: span kinds and attribute names
+# Phoenix runs in its own venv (.venv-phoenix): python3 -m venv .venv-phoenix && .venv-phoenix/bin/pip install arize-phoenix==20.20.0

@@ -1,6 +1,6 @@
 """One turn of the support desk as a stream of events (SPEC §7.1). The CLI and the web app
-only render what this yields (P-1). Stage 4: the agent step only; the guards, memory and
-the real trace id arrive in stages 5 to 8."""
+only render what this yields (P-1). Each turn is one Phoenix trace under an `agent.turn`
+span (O-2, §10). So far: the agent step; the guards and memory arrive in stages 6 to 8."""
 
 import asyncio
 import contextlib
@@ -15,6 +15,13 @@ import yaml
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
+from opentelemetry.trace import Status, StatusCode
+
+from support import telemetry
+
+# Before anything builds an agent, so ADK's spans join our traces.
+TRACER = telemetry.setup()
 
 from support.agent import AGENT_NAME, build_support_agent
 from support.config import MODEL, SESSION_EMAIL_PARAMS
@@ -95,10 +102,30 @@ def _decode_result(response: dict) -> tuple[bool, object]:
 
 
 async def run_turn(session: Session, message: str) -> AsyncIterator[dict]:
+    """Run one turn inside its root span. The span is opened here, in the generator the CLI
+    and the web response iterate, so ADK's invoke_agent becomes its child (§10)."""
     turn_id = f"turn_{uuid.uuid4().hex[:16]}"
+    attributes = {
+        SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+        SpanAttributes.INPUT_VALUE: message,
+        SpanAttributes.USER_ID: session.email,
+        SpanAttributes.SESSION_ID: session.session_id,
+        "turn.id": turn_id,
+    }
+    with TRACER.start_as_current_span("agent.turn", attributes=attributes) as span:
+        trace_id = format(span.get_span_context().trace_id, "032x")
+        async for event in _turn(session, message, turn_id, trace_id):
+            if event["type"] == "final":
+                span.set_attribute(SpanAttributes.OUTPUT_VALUE, event["response"])
+            elif event["type"] == "error":
+                span.set_status(Status(StatusCode.ERROR, event["error"]))
+            yield event
+
+
+async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> AsyncIterator[dict]:
     started = time.monotonic()
     ms = lambda since: int((time.monotonic() - since) * 1000)  # noqa: E731
-    log = {"turn_id": turn_id, "trace_id": None, "user": session.email, "message": message,
+    log = {"turn_id": turn_id, "trace_id": trace_id, "user": session.email, "message": message,
            "terminated": None, "blocked_at": None, "wall_clock_ms": 0,
            "tokens": {"in": 0, "out": 0}, "steps": [], "tool_calls": [], "llm_calls": 0}
 
@@ -110,8 +137,7 @@ async def run_turn(session: Session, message: str) -> AsyncIterator[dict]:
         (RUNS_DIR / f"{turn_id}.json").write_text(json.dumps(log, indent=2, default=str))
         return terminal
 
-    # Stage 5 replaces the placeholder with the real Phoenix trace id and URL (O-4).
-    yield {"type": "trace", "turn_id": turn_id, "trace_id": None, "url": None}
+    yield {"type": "trace", "turn_id": turn_id, "trace_id": trace_id, "url": telemetry.trace_url(trace_id)}
 
     yield {"type": "stage", "key": "agent", "label": "Support agent"}
     agent_started = last = time.monotonic()
@@ -124,6 +150,8 @@ async def run_turn(session: Session, message: str) -> AsyncIterator[dict]:
     try:
         while True:
             remaining = MAX_WALL_S - (time.monotonic() - started)
+            # Python 3.12's wait_for awaits in this same task (no new task for a positive
+            # timeout), so ADK's span context survives from one event to the next.
             try:
                 event = await asyncio.wait_for(events.__anext__(), timeout=max(remaining, 0.01))
             except StopAsyncIteration:

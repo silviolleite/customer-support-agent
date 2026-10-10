@@ -14,6 +14,7 @@ import json
 import os
 import sys
 
+from support import telemetry
 from support.auth import login
 from support.pipeline import open_session, run_turn
 
@@ -128,6 +129,7 @@ async def main() -> int:
                     render(event)
     finally:
         await session.close()
+        telemetry.flush()  # spans are batched; send them before the process exits
     return 0
 
 

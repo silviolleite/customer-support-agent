@@ -241,9 +241,11 @@ turn_bb153afa41064367.json  turn_d42b8fd12ea4492e.json
 - **The latency finding:** The logs revealed a massive performance bottleneck on the first run, which took 24.7 seconds (`24713 ms`). The CLI output shows exactly why: LiteLLM was hanging while trying to fetch `model_prices_and_context_window.json` from GitHub, eventually timing out due to a DNS resolution error. After applying the fix (bypassing/disabling this external fetch), the latency plummeted to ~5.3 seconds (`5321 ms` in the second log, a drop of nearly 20 seconds). This proves how synchronous external network dependencies during LLM initialization can severely degrade the pipeline's performance.
 
 ## Stage 5: one trace per turn
-- **I decided (what goes in span attributes, who can see Phoenix):**
-- **Trace id:**
-- **One thing the trace showed that the reply didn't:**
+- **I decided (what goes in span attributes, who can see Phoenix):** I chose log everything, including the full results of the tools instead of logging only the size of the results. Full payloads are absolutely essential for debugging LLM hallucinations and tool failures. I also decided to enrich the span attributes with execution context like `turn_id` and `user_email`. This allows us to easily filter the observability dashboard to investigate a specific user's session. Regarding visibility, the Phoenix UI must be strictly restricted to internal developers (e.g., bound only to localhost). It must never be exposed to end-users, because traces contain full prompt histories, raw tool payloads, and sensitive database responses. Exposing Phoenix publicly would be a catastrophic data leak.
+- **Trace id:** 8b6111249ff0480fe706aaa48b8245d6
+- **One thing the trace showed that the reply didn't:** The trace shows the complete order details returned by the tool (such as the product "Mechanical Keyboard", the total amount of 120.00, the date, and the delivery address "123 Market St, Springfield"), whereas the agent's final reply only stated the shipping status ("Your order 3 is SHIPPED."). The consequence of this observation is that, because the tool returns the full database row, the LLM receives the user's PII (like their home address) even when it isn't needed to answer the question. Consequently, due to my decision to log everything (Option A), this sensitive PII is now permanently recorded in the Phoenix database on disk. Knowing this, I still maintain my choice, because full payload visibility is mandatory for debugging AI agents. However, this exact consequence is the definitive proof of why Phoenix's access must be completely locked down and secured from the outside world. 
+
+The trace survived the restart, confirming that Phoenix data is correctly persisted on disk.
 
 ## Stage 6: Sanitizer and Security Judge
 - **I decided (who may block, which A2A method):**
