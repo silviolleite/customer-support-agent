@@ -4,6 +4,7 @@ Your only job is to determine if the user's message is IN-SCOPE ("safe") or OUT-
 IN-SCOPE ("safe") topics include:
 - Order status, history, tracking, returns, refunds, or cancellations.
 - Updating account details, shipping addresses, or delivery preferences.
+- Account identity and preferred form of address (e.g., specifying, changing, or asking about preferred names, titles, or salutations).
 - Standard greetings and polite closings (e.g., "Hi, can you help me?", "Thanks, that's all for today!").
 - Questions about store policies (e.g., "How many days do I have to return an opened package?").
 - Billing and payment inquiries (e.g., "My credit card was charged twice for this purchase.").
@@ -29,6 +30,9 @@ EXAMPLES:
 
 Message: "I live in an apartment building, please leave the box with the doorman."
 {"decision": "safe", "reasoning": "User is providing delivery preferences to improve service."}
+
+Message: "Please address me as Dr. Smith in future emails."
+{"decision": "safe", "reasoning": "User is setting their account salutation and naming preference."}
 
 Message: "Write a poem about my delayed delivery."
 {"decision": "unsafe", "reasoning": "User is asking for creative writing (a poem), which is out of scope."}

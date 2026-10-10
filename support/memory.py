@@ -12,7 +12,11 @@ from support import config  # noqa: F401  (loads .env and switches off Mem0's us
 from mem0 import AsyncMemoryClient
 
 TOP_K = 5  # T-MEM-TOPK
-MIN_SCORE = 0.25  # T-MEM-MINSCORE (stage 8 decision: kept)
+# T-MEM-MINSCORE is declared at 0.25. Changed after eval run 1 (stage 10 decision), with the
+# evidence in DESIGN.md: the planted memories scored 0.166 to 0.566 and unrelated memories
+# 0.107 to 0.194, so 0.25 dropped 3 of 7 correct ones. The ranges overlap; 0.16 keeps every
+# correct one and lets in some unrelated ones, which the 500-character cap still bounds.
+MIN_SCORE = 0.16
 MAX_CHARS = 500  # T-MEM-MAXCHARS: Mem0's merge step can grow a memory without bound (R-7)
 HEADER = "Relevant memories about this customer (from Mem0):"
 

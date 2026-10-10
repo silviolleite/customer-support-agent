@@ -30,9 +30,9 @@ from support import memory, telemetry
 # Before anything builds an agent, so ADK's spans join our traces.
 TRACER = telemetry.setup()
 
-from support.agent import AGENT_NAME, build_support_agent
-from support.config import MODEL, SESSION_EMAIL_PARAMS
-from support.tool_results import rows
+from support.agent import AGENT_NAME, build_support_agent  # noqa: E402  (after setup, on purpose)
+from support.config import MODEL, SESSION_EMAIL_PARAMS  # noqa: E402
+from support.tool_results import rows  # noqa: E402
 
 APP_NAME = "customer_support"
 RUNS_DIR = Path("runs")
@@ -167,7 +167,10 @@ async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> 
         span.record_exception(exc)
         span.set_status(Status(StatusCode.ERROR, str(exc)))
         log["steps"].append({"key": key, "status": "error", "error": str(exc)})
-        return {"type": "error", "step": key, "status": 502, "error": f"{what}: {exc}", "terminated": "error"}
+        # EVALS §6: the reply says the request could not be checked, and never answers it.
+        reply = (f"Sorry, your message could not be checked, so it was not answered. Please try "
+                 f"again later. ({what}: {exc})")
+        return {"type": "error", "step": key, "status": 502, "error": reply, "terminated": "error"}
 
     yield {"type": "trace", "turn_id": turn_id, "trace_id": trace_id, "url": telemetry.trace_url(trace_id)}
 

@@ -1,11 +1,11 @@
 {
-  "turn_id": "turn_3fb0d4766ca04501",
-  "trace_id": "6ec663c5d5e800c996d796d7e6869e6f",
+  "turn_id": "turn_9496e368162c427d",
+  "trace_id": "9417414460ea0e938794c2e90a7bdc6b",
   "user": "alice.jones@example.com",
   "message": "Where is my last order?",
   "terminated": "error",
   "blocked_at": null,
-  "wall_clock_ms": 58,
+  "wall_clock_ms": 64,
   "tokens": {
     "in": 0,
     "out": 0

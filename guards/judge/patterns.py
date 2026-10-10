@@ -38,7 +38,8 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("prompt_injection", re.compile(r"#+\s*new\s+instructions\b", re.I)),
     ("prompt_injection", re.compile(r"\b(security\s+judge|guardrail)\s+(has\s+)?(approved|allowed)\b", re.I)),
     ("prompt_extraction", re.compile(r"\b(system|developer)\s+prompt\b", re.I)),
-    ("prompt_extraction", re.compile(r"\b(print|repeat|reveal|show|quote|output)\b.{0,30}\b(instructions|everything\s+above)\b", re.I)),
+    ("prompt_extraction", re.compile(
+        r"\b(print|repeat|reveal|show|quote|output)\b.{0,30}\b(instructions|everything\s+above)\b", re.I)),
 ]
 
 

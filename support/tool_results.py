@@ -14,3 +14,11 @@ def rows(raw: str | Any) -> list[dict]:
     if isinstance(value, dict):
         return [value]
     return list(value)
+
+
+def raw_result(tool_response) -> object:
+    """What a tool returned, as an after-tool callback sees it: ADK 2.11 passes the tool's raw
+    return value (a JSON string from the Toolbox), not yet wrapped in {"result": ...}."""
+    if isinstance(tool_response, dict):
+        return tool_response.get("result")
+    return tool_response

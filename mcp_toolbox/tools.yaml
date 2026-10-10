@@ -52,8 +52,10 @@ type: postgres-sql
 source: shop-db
 description: >-
   Record a change the customer asked for, so a person can act on it. It never changes the
-  order itself. Returns the logged row, or no rows if the order_id is not the customer's own
-  (then nothing was logged).
+  order itself. If the request is about an order, call this only after get-order-status or
+  find-customer-orders has returned that order in this turn; never for an order you have not
+  confirmed is on the customer's account. Returns the logged row, or logged=false if nothing
+  was recorded.
 parameters:
   - name: user_email
     type: string

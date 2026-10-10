@@ -1,0 +1,7 @@
+# Gate 0 (EVALS §5): the linter this project uses. Pyflakes and pycodestyle errors only:
+# real defects (unused imports, undefined names), not style preferences.
+line-length = 120
+extend-exclude = [".venv", ".venv-phoenix"]
+
+[lint]
+select = ["E", "F", "W"]

@@ -4,9 +4,14 @@ into its tools (stage 3 decision: a fixed value at login, not a per-turn lookup)
 # support.config first: it sets LiteLLM's environment before litellm is imported.
 from support.config import MODEL, SESSION_EMAIL_PARAMS, SUPPORT_TOOLSET, TOOLBOX_URL  # isort: skip
 
+import json
+
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from toolbox_adk import ToolboxToolset
+
+from support.action_gate import gate_action_log, record_confirmed_orders
+from support.tool_results import raw_result, rows
 
 AGENT_NAME = "support_agent"
 
@@ -40,8 +45,33 @@ Rules:
   4", "return my monitor"). If it is ambiguous which order is meant, ask a short clarifying
   question and do not log anything yet. If action-log returns no rows, nothing was recorded:
   tell the customer.
+- Before logging a change to an order, confirm it is on this customer's account: look it up
+  with get-order-status (by number) or find-customer-orders (by product). If it is not there,
+  say "I can't find that order on your account." and do not call action-log for it.
 - Be brief: one or two sentences unless the customer asks for detail.
 """
+
+
+# Over MCP, "no rows" reaches the model as {"result": "null"}. In eval run 2 the agent read
+# that as success and told Bob "I have recorded your request to cancel order 1" when the
+# ownership check in action-log's SQL had recorded nothing (4 of 10 repeats of P08). So an
+# empty result is rewritten, in code, into one the model cannot mistake.
+_EMPTY = {
+    "action-log": {"logged": False, "note": "Nothing was recorded: this order is not on the customer's "
+                                            "account, or does not exist. Tell the customer nothing was recorded."},
+    "get-order-status": {"found": False, "note": "No such order on this customer's account."},
+}
+
+
+def explicit_empty_results(tool, args, tool_context, tool_response) -> dict | None:
+    """After-tool callback: replace an empty action-log or get-order-status result."""
+    if tool.name not in _EMPTY:
+        return None
+    try:
+        empty = not rows(raw_result(tool_response))
+    except (TypeError, ValueError):  # not a JSON result: leave it as the tool returned it
+        return None
+    return {"result": json.dumps([]), **_EMPTY[tool.name]} if empty else None
 
 
 def build_support_agent(email: str, full_name: str) -> tuple[LlmAgent, ToolboxToolset]:
@@ -58,5 +88,9 @@ def build_support_agent(email: str, full_name: str) -> tuple[LlmAgent, ToolboxTo
         model=LiteLlm(model=MODEL),
         instruction=INSTRUCTION.format(full_name=full_name),
         tools=[toolset],
+        # The action gate (support/action_gate.py): action-log is offered only once a named order
+        # is confirmed. Callbacks run in order; both of the first return None.
+        before_model_callback=gate_action_log,
+        after_tool_callback=[record_confirmed_orders, explicit_empty_results],
     )
     return agent, toolset
