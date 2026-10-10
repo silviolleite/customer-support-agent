@@ -68,7 +68,10 @@ class Renderer:
                 print(f"       {_sql_with_values(event['info'], event['args'])}")
         elif kind == "tool_result":
             result = event["result"]
-            outcome = f"{len(result)} rows" if event["ok"] else f"error: {result}"
+            if event["ok"]:
+                outcome = f"{len(result)} row" + ("" if len(result) == 1 else "s")
+            else:
+                outcome = f"error: {result}"
             print(f"[tool] result · {_ms(event['ms'])} · {outcome}")
         elif kind == "final":
             print(f"Agent: {event['response']}")

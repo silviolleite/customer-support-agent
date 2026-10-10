@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One entry point for every service, started in dependency order (TECHNICAL §5).
-# Stage 5: database, MCP Toolbox, Phoenix. Later stages add Judge, Masker, web.
+# Stage 6: database, MCP Toolbox, Security Judge, Phoenix. Later stages add Masker, web.
 # Background services write logs/<name>.log and logs/<name>.pid.
 #
 #   ./run.sh start    start every service, waiting for each to be healthy
@@ -8,6 +8,7 @@
 #   ./run.sh status   show what is up
 #   ./run.sh reset    throw the database volume away and reseed (EVALS §2)
 #   ./run.sh psql     open psql as the admin user (extra args are passed to psql)
+#   ./run.sh stop-judge   stop only the Security Judge (stage 6 fail-loud check)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -87,6 +88,38 @@ toolbox_status() {
   if toolbox_healthy; then ok "toolbox on :${TOOLBOX_PORT}"; else fail "toolbox down"; return 1; fi
 }
 
+# --- A2A guard services ------------------------------------------------------
+# Each guard is its own process with its own port and agent card (J-1, K-1).
+JUDGE_PORT=10002
+
+a2a_healthy() {  # $1 = port
+  curl -sf "http://127.0.0.1:$1/.well-known/agent-card.json" >/dev/null
+}
+
+a2a_start() {  # $1 = name, $2 = port, $3 = python module
+  if a2a_healthy "$2"; then ok "$1 on :$2"; return 0; fi
+  mkdir -p logs
+  setsid nohup .venv/bin/python -m "$3" >"logs/$1.log" 2>&1 &
+  echo $! >"logs/$1.pid"
+  printf '  waiting for %s' "$1"
+  for _ in $(seq 1 60); do
+    if a2a_healthy "$2"; then echo; ok "$1 on :$2"; return 0; fi
+    printf '.'; sleep 1
+  done
+  echo; fail "$1 did not start"; tail -20 "logs/$1.log"; exit 1
+}
+
+a2a_stop() {  # $1 = name
+  if [[ -f "logs/$1.pid" ]]; then
+    kill -- "-$(cat "logs/$1.pid")" 2>/dev/null || true
+    rm -f "logs/$1.pid"
+  fi
+}
+
+a2a_status() {  # $1 = name, $2 = port
+  if a2a_healthy "$2"; then ok "$1 on :$2"; else fail "$1 down"; return 1; fi
+}
+
 # --- Phoenix ----------------------------------------------------------------
 # Its own long-lived process with storage in .phoenix/, so traces outlive the agent (O-1,
 # R-10). It runs from .venv-phoenix so its dependencies never fight ADK's OpenTelemetry pins.
@@ -127,12 +160,13 @@ phoenix_status() {
 
 # --- commands ---------------------------------------------------------------
 case "${1:-}" in
-  start)  db_start; toolbox_start; phoenix_start ;;
+  start)  db_start; toolbox_start; a2a_start judge "$JUDGE_PORT" guards.judge.server; phoenix_start ;;
   # The CLI never stops Phoenix; only this explicit command does (O-1).
-  stop)   phoenix_stop; toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
-  status) rc=0; db_status || rc=1; toolbox_status || rc=1; phoenix_status || rc=1; exit $rc ;;
+  stop)   phoenix_stop; a2a_stop judge; toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
+  status) rc=0; db_status || rc=1; toolbox_status || rc=1; a2a_status judge "$JUDGE_PORT" || rc=1; phoenix_status || rc=1; exit $rc ;;
   # The Toolbox's connections die with the old database, so it restarts with it.
   reset)  toolbox_stop; db_reset; toolbox_start ;;
   psql)   shift; psql_admin "$@" ;;
+  stop-judge) a2a_stop judge; ok "judge stopped" ;;
   *)      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

@@ -1,0 +1,27 @@
+{
+  "turn_id": "turn_3fb0d4766ca04501",
+  "trace_id": "6ec663c5d5e800c996d796d7e6869e6f",
+  "user": "alice.jones@example.com",
+  "message": "Where is my last order?",
+  "terminated": "error",
+  "blocked_at": null,
+  "wall_clock_ms": 58,
+  "tokens": {
+    "in": 0,
+    "out": 0
+  },
+  "steps": [
+    {
+      "key": "sanitize",
+      "status": "passed",
+      "ms": 0
+    },
+    {
+      "key": "judge",
+      "status": "error",
+      "error": "unreachable: ConnectError: All connection attempts failed"
+    }
+  ],
+  "tool_calls": [],
+  "llm_calls": 0
+}

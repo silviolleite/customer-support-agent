@@ -1,6 +1,7 @@
 """One turn of the support desk as a stream of events (SPEC §7.1). The CLI and the web app
 only render what this yields (P-1). Each turn is one Phoenix trace under an `agent.turn`
-span (O-2, §10). So far: the agent step; the guards and memory arrive in stages 6 to 8."""
+span (O-2, §10). So far: sanitize -> judge -> agent; guardrail, memory and mask arrive in
+stages 7 and 8."""
 
 import asyncio
 import contextlib
@@ -18,6 +19,9 @@ from google.genai import types
 from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 from opentelemetry.trace import Status, StatusCode
 
+from guards.a2a_client import JUDGE_URL, GuardError, send_message
+from guards.judge.verdict import parse_verdict
+from guards.sanitizer import sanitize
 from support import telemetry
 
 # Before anything builds an agent, so ADK's spans join our traces.
@@ -34,6 +38,9 @@ RUNS_DIR = Path("runs")
 MAX_TOOL_CALLS = 6  # T-BUD-TOOLS
 MAX_TOKENS = 30_000  # T-BUD-TOKENS
 MAX_WALL_S = 30  # T-BUD-WALL
+
+BLOCKED_REPLY = "Sorry, I can't help with that request."
+_GUARDRAIL_KIND = OpenInferenceSpanKindValues.GUARDRAIL.value
 
 
 def _load_tool_info() -> dict[str, dict]:
@@ -137,7 +144,61 @@ async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> 
         (RUNS_DIR / f"{turn_id}.json").write_text(json.dumps(log, indent=2, default=str))
         return terminal
 
+    def passed_or_blocked(key: str, passed: bool, since: float) -> dict:
+        step = {"key": key, "status": "passed" if passed else "blocked", "ms": ms(since)}
+        log["steps"].append(step)
+        return step
+
+    def blocked(key: str) -> dict:
+        """P-3: a block ends the turn here; nothing later runs, save included."""
+        log["blocked_at"] = key
+        return {"type": "final", "blocked": True, "blocked_at": key, "response": BLOCKED_REPLY,
+                "terminated": "blocked", "wall_clock_ms": ms(started), "tokens": log["tokens"]}
+
+    def guard_failed(key: str, span, exc: Exception, what: str) -> dict:
+        """P-4, R-4: a guard that cannot answer fails the turn, loudly, in the trace and the reply."""
+        span.record_exception(exc)
+        span.set_status(Status(StatusCode.ERROR, str(exc)))
+        log["steps"].append({"key": key, "status": "error", "error": str(exc)})
+        return {"type": "error", "step": key, "status": 502, "error": f"{what}: {exc}", "terminated": "error"}
+
     yield {"type": "trace", "turn_id": turn_id, "trace_id": trace_id, "url": telemetry.trace_url(trace_id)}
+
+    # Sanitizer: in-process, no model call (S-1, S-2).
+    yield {"type": "stage", "key": "sanitize", "label": "Sanitizer"}
+    step_started = time.monotonic()
+    with TRACER.start_as_current_span("security.sanitize", attributes={
+        SpanAttributes.OPENINFERENCE_SPAN_KIND: _GUARDRAIL_KIND, SpanAttributes.INPUT_VALUE: message,
+    }) as span:
+        result = sanitize(message)
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.detail)
+    step = passed_or_blocked("sanitize", result.passed, step_started)
+    yield {"type": "step", **step, "detail": result.detail, "span": "security.sanitize", "kind": "Python fn"}
+    if not result.passed:
+        yield finish(blocked("sanitize"))
+        return
+
+    # Security Judge: a separate A2A service; its verdict must be explicit (J-1 to J-4).
+    yield {"type": "stage", "key": "judge", "label": "A2A Security Judge"}
+    step_started = time.monotonic()
+    with TRACER.start_as_current_span("security.a2a_judge", attributes={
+        SpanAttributes.OPENINFERENCE_SPAN_KIND: _GUARDRAIL_KIND, SpanAttributes.INPUT_VALUE: message,
+    }) as span:
+        try:
+            verdict = parse_verdict(await send_message(JUDGE_URL, message))
+        except GuardError as exc:
+            yield finish(guard_failed("judge", span, exc, "Security Judge unavailable"))
+            return
+        except ValueError as exc:  # not JSON, or not exactly {verdict, reason} (J-3)
+            yield finish(guard_failed("judge", span, exc, "Security Judge gave no valid verdict"))
+            return
+        detail = f"{verdict.verdict}: {verdict.reason}"
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, detail)
+    step = passed_or_blocked("judge", verdict.verdict == "allow", step_started)
+    yield {"type": "step", **step, "detail": detail, "span": "security.a2a_judge", "kind": "A2A"}
+    if verdict.verdict == "block":
+        yield finish(blocked("judge"))
+        return
 
     yield {"type": "stage", "key": "agent", "label": "Support agent"}
     agent_started = last = time.monotonic()

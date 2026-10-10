@@ -248,10 +248,20 @@ turn_bb153afa41064367.json  turn_d42b8fd12ea4492e.json
 The trace survived the restart, confirming that Phoenix data is correctly persisted on disk.
 
 ## Stage 6: Sanitizer and Security Judge
-- **I decided (who may block, which A2A method):**
-- **Predicted vs actual X01 latency:**
+- **I decided (who may block, which A2A method):** I decided that the patterns will block immediately on their own to guarantee extremely fast rejection times. The known cost of this choice is that a false positive will block a legitimate customer without an LLM's second opinion, risking failures on legitimate edge cases that intentionally contain trigger words like "drop" or apostrophes. For the protocol, I decided to use the standard `message/send` A2A method using the ADK's `to_a2a()` wrapper.
+- **Predicted vs actual X01 latency:** I predicted the X01 latency would be extremely low (under 150ms) because it should be instantly blocked by the regex patterns without ever calling the LLM. Actual: 0 ms in the Sanitizer. The request never even reached the Judge because the Sanitizer runs locally as the very first step in the pipeline. It caught the malicious input immediately, saving a network call and completely neutralizing the attack in zero milliseconds.
 - **When I stopped the Judge, my pipeline first:**
-- **Failing trajectory saved at:**
+```
+CS_PASSWORD=alice .venv/bin/python -m support.cli --user alice.jones@example.com
+Hello, Alice Jones. Type quit to leave.
+You: Where is my last order?
+[trace] turn_3fb0d4766ca04501
+[sanitize] passed · 0 ms · security.sanitize - clean: 23 characters, all allowed
+[error] judge · 502 · Security Judge unavailable: unreachable: ConnectError: All connection attempts failed
+[trace] http://127.0.0.1:6006/redirects/traces/6ec663c5d5e800c996d796d7e6869e6f
+```
+This returns an error rather than a default "allow" response because security systems must strictly fail closed. If the code treated a timeout or connection failure as an "allow" (fail-open), an attacker could simply DoS the Security Judge, force a timeout, and completely bypass the security boundary to inject malicious payloads.
+- **Failing trajectory saved at:** runs/failing/turn_3fb0d4766ca04501.json
 
 ## Stage 7: the Guardrail
 - **Three messages that must pass / three that must not (written before the prompt):**

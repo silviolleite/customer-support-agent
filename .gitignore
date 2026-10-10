@@ -1,8 +1,8 @@
 .env
 .venv/
-runs/
+runs/*
 !runs/failing/
-reports/
+reports/*
 !reports/eval.json
 __pycache__/
 *.pyc
