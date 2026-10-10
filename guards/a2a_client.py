@@ -4,6 +4,7 @@ Fail loud (P-4, R-4): an unreachable service, a timeout, an HTTP or JSON-RPC err
 reply with no text all raise GuardError. Nothing here ever turns a failure into "allow".
 
     .venv/bin/python -m guards.a2a_client judge "What's the status of order 3?"
+    .venv/bin/python -m guards.a2a_client masker '{"text": "Call 555-0100", "user_email": "alice.jones@example.com"}'
 """
 
 import asyncio
@@ -15,6 +16,7 @@ import uuid
 import httpx
 
 JUDGE_URL = os.environ.get("JUDGE_URL", "http://127.0.0.1:10002")
+MASKER_URL = os.environ.get("MASKER_URL", "http://127.0.0.1:10003")
 TIMEOUT_S = 10.0
 
 
@@ -51,7 +53,7 @@ async def send_message(url: str, text: str, timeout: float = TIMEOUT_S) -> str:
 
 
 async def _main(service: str, text: str) -> None:
-    url = {"judge": JUDGE_URL}[service]
+    url = {"judge": JUDGE_URL, "masker": MASKER_URL}[service]
     started = time.monotonic()
     reply = await send_message(url, text)
     print(f"{reply}\n({int((time.monotonic() - started) * 1000)} ms)")

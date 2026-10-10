@@ -1,7 +1,9 @@
 """One turn of the support desk as a stream of events (SPEC §7.1). The CLI and the web app
 only render what this yields (P-1). Each turn is one Phoenix trace under an `agent.turn`
-span (O-2, §10). So far: sanitize -> judge -> guardrail -> agent; memory and mask arrive in
-stage 8."""
+span (O-2, §10). Step order is fixed (P-2):
+
+    sanitize -> judge -> guardrail -> recall -> agent -> mask -> save
+"""
 
 import asyncio
 import contextlib
@@ -20,10 +22,10 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttribu
 from opentelemetry.trace import Status, StatusCode
 
 from guards import guardrail
-from guards.a2a_client import JUDGE_URL, GuardError, send_message
+from guards.a2a_client import JUDGE_URL, MASKER_URL, GuardError, send_message
 from guards.judge.verdict import parse_verdict
 from guards.sanitizer import sanitize
-from support import telemetry
+from support import memory, telemetry
 
 # Before anything builds an agent, so ADK's spans join our traces.
 TRACER = telemetry.setup()
@@ -39,6 +41,7 @@ RUNS_DIR = Path("runs")
 MAX_TOOL_CALLS = 6  # T-BUD-TOOLS
 MAX_TOKENS = 30_000  # T-BUD-TOKENS
 MAX_WALL_S = 30  # T-BUD-WALL
+MEM0_TIMEOUT_S = 10  # our bound on each Mem0 call, inside the wall-clock budget
 
 BLOCKED_REPLY = "Sorry, I can't help with that request."
 # Stage 7 decision: an off-topic block says what the desk is for.
@@ -226,12 +229,44 @@ async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> 
         yield finish(blocked("guardrail", OFF_TOPIC_REPLY))
         return
 
+    # Recall: a pipeline step, not a tool the model may skip (R-1, R-2, R-3, R-5). Stage 8
+    # decision: if Mem0 fails, the turn goes on without memories, and the failure is shown in
+    # the step detail and as an error on the span, never hidden.
+    yield {"type": "stage", "key": "recall", "label": "Mem0 recall"}
+    step_started = time.monotonic()
+    candidates: list[memory.Candidate] = []
+    with TRACER.start_as_current_span("memory.recall", attributes={
+        SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.RETRIEVER.value,
+        SpanAttributes.INPUT_VALUE: message,
+    }) as span:
+        try:
+            candidates = await asyncio.wait_for(memory.recall(message, session.email), MEM0_TIMEOUT_S)
+            inserted = sum(c.inserted for c in candidates)
+            detail = f"{inserted} of {len(candidates)} inserted" if candidates else "no memories"
+            for n, candidate in enumerate(candidates):
+                span.set_attribute(f"retrieval.documents.{n}.document.content", candidate.memory)
+                span.set_attribute(f"retrieval.documents.{n}.document.score", candidate.score)
+                span.set_attribute(f"retrieval.documents.{n}.document.metadata",
+                                   json.dumps({"inserted": candidate.inserted, "reason": candidate.reason}))
+        except Exception as exc:  # TimeoutError or any Mem0 failure
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, f"Mem0 unavailable: {exc}"))
+            detail = f"Mem0 unavailable, answering without memories: {exc.__class__.__name__}: {exc}"
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, detail)
+    step = {"key": "recall", "status": "passed", "ms": ms(step_started),
+            "inserted": sum(c.inserted for c in candidates),
+            "skipped": sum(not c.inserted for c in candidates)}
+    log["steps"].append(step)
+    yield {"type": "step", **step, "detail": detail, "span": "memory.recall", "kind": "Python fn",
+           "memories": [c.as_event() for c in candidates]}
+
     yield {"type": "stage", "key": "agent", "label": "Support agent"}
     agent_started = last = time.monotonic()
     llm_calls_before = log["llm_calls"]  # the guardrail's call is not the agent's
     pending: dict[str, tuple[int, str, float]] = {}  # ADK call id -> (our id, name, start)
     reply, terminated = "", "done"
-    content = types.Content(role="user", parts=[types.Part(text=message)])
+    agent_input = memory.with_memories(message, candidates)
+    content = types.Content(role="user", parts=[types.Part(text=agent_input)])
     events = session.runner.run_async(
         user_id=session.email, session_id=session.session_id, new_message=content
     ).__aiter__()
@@ -310,6 +345,51 @@ async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> 
     log["steps"].append(step)
     yield {"type": "step", **step, "kind": "in-process", "span": f"invoke_agent {AGENT_NAME}",
            "detail": f"{log['llm_calls'] - llm_calls_before} llm calls, {calls_made} tool calls"}
+
+    # Data Masker: a separate A2A service; it changes only PII and says what it changed (K-1 to
+    # K-3). If it cannot answer, the unmasked reply is never sent (P-4).
+    yield {"type": "stage", "key": "mask", "label": "A2A Data Masker"}
+    step_started = time.monotonic()
+    with TRACER.start_as_current_span("security.a2a_mask", attributes={
+        SpanAttributes.OPENINFERENCE_SPAN_KIND: _GUARDRAIL_KIND, SpanAttributes.INPUT_VALUE: reply,
+    }) as span:
+        try:
+            raw = await send_message(MASKER_URL, json.dumps({"text": reply, "user_email": session.email}))
+        except GuardError as exc:
+            yield finish(guard_failed("mask", span, exc, "Data Masker unavailable"))
+            return
+        try:
+            masked = json.loads(raw)
+            reply, detail = masked["masked_text"], masked["detail"]
+            if not isinstance(reply, str) or not isinstance(detail, str):
+                raise ValueError("masked_text and detail must be strings")
+        except (ValueError, KeyError, TypeError) as exc:
+            yield finish(guard_failed("mask", span, exc, "Data Masker gave no valid result"))
+            return
+        # Before (input.value) and after (output.value) side by side in the trace (B-PII).
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, reply)
+        span.set_attribute("mask.detail", detail)
+    step = passed_or_blocked("mask", True, step_started)
+    yield {"type": "step", **step, "detail": detail, "span": "security.a2a_mask", "kind": "A2A"}
+
+    # Save: only the customer's message, only on a turn no guard blocked (R-4, P-3). Same
+    # stage 8 decision as recall: a Mem0 failure is shown, not fatal.
+    yield {"type": "stage", "key": "save", "label": "Mem0 save"}
+    step_started = time.monotonic()
+    with TRACER.start_as_current_span("memory.save", attributes={
+        SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.TOOL.value,
+        SpanAttributes.INPUT_VALUE: message,
+    }) as span:
+        try:
+            status = await asyncio.wait_for(memory.save(message, session.email), MEM0_TIMEOUT_S)
+            detail = f"saved the customer's message (Mem0: {status})"
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, f"Mem0 unavailable: {exc}"))
+            detail = f"Mem0 unavailable, nothing saved: {exc.__class__.__name__}: {exc}"
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, detail)
+    step = passed_or_blocked("save", True, step_started)
+    yield {"type": "step", **step, "detail": detail, "span": "memory.save", "kind": "Python fn"}
 
     yield finish({"type": "final", "blocked": False, "blocked_at": None, "response": reply,
                   "terminated": terminated, "wall_clock_ms": ms(started), "tokens": log["tokens"]})

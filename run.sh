@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One entry point for every service, started in dependency order (TECHNICAL §5).
-# Stage 6: database, MCP Toolbox, Security Judge, Phoenix. Later stages add Masker, web.
+# Stage 8: database, MCP Toolbox, Security Judge, Data Masker, Phoenix. Stage 9 adds the web.
 # Background services write logs/<name>.log and logs/<name>.pid.
 #
 #   ./run.sh start    start every service, waiting for each to be healthy
@@ -91,6 +91,7 @@ toolbox_status() {
 # --- A2A guard services ------------------------------------------------------
 # Each guard is its own process with its own port and agent card (J-1, K-1).
 JUDGE_PORT=10002
+MASKER_PORT=10003
 
 a2a_healthy() {  # $1 = port
   curl -sf "http://127.0.0.1:$1/.well-known/agent-card.json" >/dev/null
@@ -160,10 +161,12 @@ phoenix_status() {
 
 # --- commands ---------------------------------------------------------------
 case "${1:-}" in
-  start)  db_start; toolbox_start; a2a_start judge "$JUDGE_PORT" guards.judge.server; phoenix_start ;;
+  start)  db_start; toolbox_start; a2a_start judge "$JUDGE_PORT" guards.judge.server
+          a2a_start masker "$MASKER_PORT" guards.masker.server; phoenix_start ;;
   # The CLI never stops Phoenix; only this explicit command does (O-1).
-  stop)   phoenix_stop; a2a_stop judge; toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
-  status) rc=0; db_status || rc=1; toolbox_status || rc=1; a2a_status judge "$JUDGE_PORT" || rc=1; phoenix_status || rc=1; exit $rc ;;
+  stop)   phoenix_stop; a2a_stop masker; a2a_stop judge; toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
+  status) rc=0; db_status || rc=1; toolbox_status || rc=1; a2a_status judge "$JUDGE_PORT" || rc=1
+          a2a_status masker "$MASKER_PORT" || rc=1; phoenix_status || rc=1; exit $rc ;;
   # The Toolbox's connections die with the old database, so it restarts with it.
   reset)  toolbox_stop; db_reset; toolbox_start ;;
   psql)   shift; psql_admin "$@" ;;

@@ -11,6 +11,10 @@ load_dotenv()
 # with the package is enough. Must be set before litellm is first used.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+# The mem0 client reports usage events to Mem0's analytics by default; our traffic carries
+# customer messages, so it stays off. Read when mem0 is imported, so set it here first.
+os.environ.setdefault("MEM0_TELEMETRY", "False")
+
 MODEL = os.environ.get("MODEL", "openrouter/google/gemini-2.5-flash")
 TOOLBOX_URL = os.environ.get("TOOLBOX_URL", "http://127.0.0.1:5000")
 

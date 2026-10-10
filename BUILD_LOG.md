@@ -286,10 +286,24 @@ This returns an error rather than a default "allow" response because security sy
 
 - **Memory plants:** 0/10 false blocks (e.g., M05 'allergic to peanuts' passed successfully because the prompt explicitly allows personal medical conditions when provided as delivery or packaging context).
 
-## Stage 8: Masker and memory
+# Stage 8: Masker and memory
 - **I decided (what counts as PII, the cutoff):**
+  - **PII & K-2:** Followed standard K-2 specification (masking third-party emails, phone numbers, and card numbers, while sparing the logged-in user's own email and delivery address).
+  - **Mem0 Resilience:** Fail gracefully. If Mem0 is unreachable, the pipeline proceeds without memory enrichment, logging "Mem0 unavailable" on the step detail and marking the span as an error.
+  - **Code beyond prompt:** I decided on prompt-only defense. The known cost and risk of this choice is that the Masker only redacts PII and does not detect leaked memory blocks; protection relies entirely on the LLM strictly obeying the prompt instructions.
+  - **Memory Cutoff:** Kept the cutoff at **0.25** for now based on a single data point, accepting the risk that if relevant memories consistently score around ~0.23, `T-MEM-RECALL` will fail in the Stage 10 evaluation. I will re-evaluate this threshold with full eval data in Stage 10.
+
 - **My planted memory's score, and whether my cutoff kept it:**
-- **What the Masker reported on my PII test:**
+  - The planted memory returned a composite search score (combining dense vectors, BM25, and entity matching) of **0.23**. Because the cutoff was set at **0.25**, the threshold discarded this relevant memory from the recall step—highlighting the exact recall risk accepted under this setting.
+
+- **Memory hallucination fix (Traces 4d71ed97 → 789c64e8):**
+  - **Issue:** Trace `4d71ed97…` showed a memory block being hallucinated in the final output even when no relevant stored preference was retrieved. The model not only echoed the header structure but invented content ("front door" delivery, when Diana's stored memory was "back door").
+  - **Root Cause:** The agent's core system prompt contained the literal header string, inducing the model to fabricate a memory when no context was present.
+  - **Fix:** Removed the literal header from the system prompt instructions and added two explicit rules: "if no memory block is present, state that no preference is registered" and "never claim a change was recorded unless action-log returns a row".
+  - **Result:** Trace `789c64e8…` confirmed that the model did not invent or hallucinate a memory in this execution when the cutoff yielded no results.
+
+- **What the Masker reported on my PII test:** 
+  The Masker reported `masked 1 phone number` in 34 ms (`[mask] passed · 34 ms · security.a2a_mask - masked 1 phone number`), redacting the user's phone number to `***-****` before presenting the final reply.
 
 ## Stage 9: the web UI
 - **My sketch, in words:**
