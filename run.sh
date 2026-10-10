@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One entry point for every service, started in dependency order (TECHNICAL §5).
-# Stage 1: only the database. Later stages add Toolbox, Judge, Masker, Phoenix, web.
+# Stage 2: database + MCP Toolbox. Later stages add Judge, Masker, Phoenix, web.
+# Background services write logs/<name>.log and logs/<name>.pid.
 #
 #   ./run.sh start    start every service, waiting for each to be healthy
 #   ./run.sh stop     stop every service (keeps data)
@@ -49,12 +50,50 @@ psql_admin() {
   docker exec -i cs_db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"
 }
 
+# --- MCP Toolbox -------------------------------------------------------------
+TOOLBOX_VERSION=1.13.1
+TOOLBOX_PORT=5000
+
+toolbox_healthy() {
+  curl -sf "http://127.0.0.1:${TOOLBOX_PORT}/api/toolset/support_agent" >/dev/null
+}
+
+toolbox_start() {
+  if toolbox_healthy; then ok "toolbox on :${TOOLBOX_PORT}"; return 0; fi
+  mkdir -p logs
+  setsid nohup npx -y "@toolbox-sdk/server@${TOOLBOX_VERSION}" --config mcp_toolbox/tools.yaml \
+    --enable-api --address 127.0.0.1 --port "${TOOLBOX_PORT}" --disable-version-check \
+    --allowed-hosts "127.0.0.1:${TOOLBOX_PORT},localhost:${TOOLBOX_PORT}" \
+    --allowed-origins "http://127.0.0.1:8000,http://localhost:8000" \
+    >logs/toolbox.log 2>&1 &
+  echo $! >logs/toolbox.pid
+  printf '  waiting for toolbox'
+  for _ in $(seq 1 60); do
+    if toolbox_healthy; then echo; ok "toolbox on :${TOOLBOX_PORT}"; return 0; fi
+    printf '.'; sleep 1
+  done
+  echo; fail "toolbox did not start"; tail -20 logs/toolbox.log; exit 1
+}
+
+toolbox_stop() {
+  if [[ -f logs/toolbox.pid ]]; then
+    # setsid made npx a group leader; killing the group also stops the server it spawned.
+    kill -- "-$(cat logs/toolbox.pid)" 2>/dev/null || true
+    rm -f logs/toolbox.pid
+  fi
+}
+
+toolbox_status() {
+  if toolbox_healthy; then ok "toolbox on :${TOOLBOX_PORT}"; else fail "toolbox down"; return 1; fi
+}
+
 # --- commands ---------------------------------------------------------------
 case "${1:-}" in
-  start)  db_start ;;
-  stop)   docker compose stop >/dev/null; ok "stopped" ;;
-  status) db_status ;;
-  reset)  db_reset ;;
+  start)  db_start; toolbox_start ;;
+  stop)   toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
+  status) rc=0; db_status || rc=1; toolbox_status || rc=1; exit $rc ;;
+  # The Toolbox's connections die with the old database, so it restarts with it.
+  reset)  toolbox_stop; db_reset; toolbox_start ;;
   psql)   shift; psql_admin "$@" ;;
   *)      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

@@ -72,9 +72,25 @@ DETAIL:  Failing row contains (1, 2026-10-10 12:19:22.694927+00, x, RETURN_ITEM,
 - **Log it question (What would break if the seed ran twice?):** If `seed.sql` somehow ran twice without the `DROP TABLE` line, it would crash immediately on the `CREATE TABLE users` statement with a "relation already exists" error. Even if it bypassed that and reached the data population, it wouldn't fail on primary keys (since `SERIAL` would just auto-increment past 17), but rather on the `UNIQUE` constraint for the user's `email`. However, the beauty of choosing **Option A** is that it structurally prevents this scenario altogether. The official Postgres Docker image only executes scripts in `/docker-entrypoint-initdb.d` when the data volume is completely empty. By wiping the volume on every reset, we don't just work around the issue—we guarantee the seed script only ever runs exactly once per lifecycle.
 
 ## Stage 2: the tools, and where access control lives
-- **Before reading SPEC R-1, I thought ownership belonged in:**
-- **I decided:**
+- **Before reading SPEC R-1, I thought ownership belonged in:** in the SQL
+- **I decided:** to enforce data ownership directly in the SQL queries of the tools (`get-order-status` and `find-customer-orders`), but with a critical security constraint: the customer's email must be bound directly from the authenticated session context, not provided by the LLM. As highlighted by R-1, relying on the prompt to enforce "only show this user's data" is a vulnerability. Following M-4 and M-5, I will use `toolbox-core`'s bound parameters to bind the session's email (via a callable or context value) to a SQL parameter (e.g., `WHERE customer_email = $2`). This guarantees that no matter what the LLM attempts to do, the database will strictly filter the query to only return rows belonging to the logged-in user.
 - **What happened (order 5 as alice):**
+
+```
+./run.sh status
+  ✔ postgres on 127.0.0.1:5433
+  ✔ toolbox on :5000
+
+curl -s -X POST localhost:5000/api/tool/get-order-status/invoke \
+  -H 'content-type: application/json' -d '{"order_id": 3, "customer_email": "alice.jones@example.com"}'
+{"result":"[{\"order_id\":3,\"status\":\"SHIPPED\",\"items\":[{\"price\":120,\"product\":\"Mechanical Keyboard\",\"qty\":1}],\"order_date\":\"2026-10-08T09:59:46.532726-03:00\",\"total_amount\":120.00,\"delivery_address\":\"123 Market St, Springfield\"}]"}
+
+curl -s -X POST localhost:5000/api/tool/get-order-status/invoke \
+  -H 'content-type: application/json' -d '{"order_id": 5, "customer_email": "alice.jones@example.com"}'
+{"result":"[]"}
+```
+
+The Alice's order 3 returned with success, and the order 5 (Bob's order) returned empty.
 
 ## Stage 3: the agent, and a bare CLI
 - **I decided (tools loaded, how the email is bound):**

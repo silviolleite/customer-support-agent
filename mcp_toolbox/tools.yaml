@@ -1,0 +1,113 @@
+# MCP Toolbox for Databases: the only path from Python to Postgres (M-2).
+# Ownership lives in the SQL (M-4, R-1): every read filters on customer_email, and the
+# agent's toolset will get that email bound from the session in stage 3 (M-5).
+kind: source
+name: shop-db
+type: postgres
+host: 127.0.0.1
+port: ${POSTGRES_PORT}
+database: ${POSTGRES_DB}
+user: ${TOOLBOX_DB_USER}
+password: ${TOOLBOX_DB_PASSWORD}
+---
+kind: tool
+name: get-order-status
+type: postgres-sql
+source: shop-db
+description: >-
+  Look up one order of the logged-in customer by its order id. Returns no rows when the
+  order does not exist or belongs to someone else; treat both as "not found on your account".
+parameters:
+  - name: order_id
+    type: integer
+    description: The order number the customer asked about.
+  - name: customer_email
+    type: string
+    description: The logged-in customer's email (bound by the application, never chosen by the model).
+statement: |
+  SELECT order_id, status, items, order_date, total_amount, delivery_address
+  FROM customer_orders
+  WHERE order_id = $1 AND customer_email = $2;
+---
+kind: tool
+name: find-customer-orders
+type: postgres-sql
+source: shop-db
+description: >-
+  List the logged-in customer's orders, newest first. Use it for "my last order",
+  order history, or to identify an order the customer describes by product.
+parameters:
+  - name: customer_email
+    type: string
+    description: The logged-in customer's email (bound by the application, never chosen by the model).
+statement: |
+  SELECT order_id, status, items, order_date, total_amount
+  FROM customer_orders
+  WHERE customer_email = $1
+  ORDER BY order_date DESC;
+---
+kind: tool
+name: action-log
+type: postgres-sql
+source: shop-db
+description: >-
+  Record a change the customer asked for, so a person can act on it. It never changes the
+  order itself. Returns the logged row, or no rows if the order_id is not the customer's own
+  (then nothing was logged).
+parameters:
+  - name: user_email
+    type: string
+    description: The logged-in customer's email (bound by the application, never chosen by the model).
+  - name: action_type
+    type: string
+    description: >-
+      Exactly one of CANCEL_ORDER, RETURN_ORDER, UPDATE_ADDRESS, UPDATE_PREFERENCE,
+      UPDATE_PROFILE. No other value is accepted.
+  - name: parameters
+    type: string
+    description: >-
+      A JSON object with the details of the request. Include "order_id" (a number) whenever
+      an order is involved, e.g. {"order_id": 4, "reason": "ordered by mistake"}.
+# M-8: INSERT ... SELECT ... WHERE logs only if there is no order_id, or the order is the
+# user's own. Explicit ::text casts: $1 is used against two columns of different varchar
+# lengths, and Postgres refuses to guess. M-7: the CHECK constraint on action_type rejects
+# anything outside the enum.
+statement: |
+  INSERT INTO actions_log (user_email, action_type, parameters)
+  SELECT $1::text, $2::text, $3::jsonb
+  WHERE ($3::jsonb ->> 'order_id') IS NULL
+     OR EXISTS (SELECT 1 FROM customer_orders
+                WHERE order_id = ($3::jsonb ->> 'order_id')::int AND customer_email = $1::text)
+  RETURNING id, action_type, parameters;
+---
+# Login lookup for the CLI and web app (no SQL in Python, M-2). Not in the agent's toolset.
+kind: tool
+name: authenticate-user
+type: postgres-sql
+source: shop-db
+description: Check a customer's email and password. Returns the customer's profile, or no rows.
+parameters:
+  - name: email
+    type: string
+    description: The email typed at login.
+  - name: password
+    type: string
+    description: The password typed at login (demo seed, plain text; SPEC §8).
+statement: |
+  SELECT email, full_name, is_premium_customer
+  FROM users
+  WHERE email = $1 AND password = $2;
+---
+# The only toolset the support agent loads: two reads and one append. No tool here, or
+# anywhere in this file, can change customer_orders (M-6, T-MUTATE).
+kind: toolset
+name: support_agent
+tools:
+  - get-order-status
+  - find-customer-orders
+  - action-log
+---
+kind: toolset
+name: auth
+tools:
+  - authenticate-user
