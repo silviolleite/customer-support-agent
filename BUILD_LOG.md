@@ -306,8 +306,8 @@ This returns an error rather than a default "allow" response because security sy
   The Masker reported `masked 1 phone number` in 34 ms (`[mask] passed · 34 ms · security.a2a_mask - masked 1 phone number`), redacting the user's phone number to `***-****` before presenting the final reply.
 
 ## Stage 9: the web UI
-- **My sketch, in words:**
-- **Something the UI shows that the CLI doesn't (feature or leak?):**
+- **My sketch, in words:** I decided a fixed side-by-side layout: chat interface on the left and a live execution timeline on the right. This ensures that every step (status, detail, latency, spans, tool calls with arguments, executed SQL queries with bound parameters, table-formatted results, and the Phoenix trace link) streams live in real-time alongside the conversation without hiding critical execution details behind collapsible accordions.
+- **Something the UI shows that the CLI doesn't (feature or leak?):** The UI exposes internal pipeline execution data—including live step latencies, Mem0 vector scores with cutoff decisions, Phoenix trace links, and raw SQL queries alongside tabular database results like delivery_address. While this level of granularity is an essential observability feature for developers and internal supervisors auditing tool execution and query safety, rendering raw database schemas and unredacted SQL directly to an end-user interface would constitute a critical security leak; thus, this execution side-panel must remain strictly restricted to administrative roles.
 
 ## Stage 10: the eval runner
 - **How I handled the memory waits:**

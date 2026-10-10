@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support Desk</title>
+<!-- Stage 9 (W-1 to W-5): chat on the left, the turn's steps live on the right (stage 9
+     decision: a fixed side panel). Everything here is rendered from the /api/chat stream. -->
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #677085; --line: #e2e5eb;
+    --accent: #3157d5; --ok: #1f8a4c; --bad: #c4322b; --run: #b7791f; --code: #f0f2f6;
+    --user: #3157d5; --user-text: #ffffff; --agent: #eef0f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1a1e26; --text: #e6e8ee; --muted: #9aa3b5; --line: #2b313d;
+      --accent: #7c9bff; --ok: #4cc27f; --bad: #ff6b62; --run: #f0b54a; --code: #222833;
+      --user: #3d5fd9; --user-text: #ffffff; --agent: #232935; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  button { font: inherit; cursor: pointer; border: 0; border-radius: 6px; padding: 8px 14px;
+    background: var(--accent); color: #fff; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  input { font: inherit; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--panel); color: var(--text); width: 100%; }
+  .hidden { display: none !important; }
+
+  /* login */
+  #login { max-width: 340px; margin: 12vh auto; padding: 24px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 10px; }
+  #login h1 { margin: 0 0 4px; font-size: 18px; }
+  .error-text { color: var(--bad); min-height: 1.2em; }
+
+  /* layout */
+  #app { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); height: 100vh; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header strong { font-size: 15px; }
+  #app { grid-template-rows: auto minmax(0, 1fr); }
+  #chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+  #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 85%; padding: 9px 12px; border-radius: 10px; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: var(--user); color: var(--user-text); }
+  .msg.agent { align-self: flex-start; background: var(--agent); }
+  .msg.blocked { border-left: 3px solid var(--run); }
+  .msg.error { align-self: flex-start; background: transparent; color: var(--bad);
+    border: 1px solid var(--bad); }
+  .msg .meta { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+  #composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line);
+    background: var(--panel); }
+
+  /* steps panel */
+  #panel { overflow-y: auto; padding: 14px 16px; min-height: 0; }
+  #arch { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 14px; }
+  #arch .node { padding: 4px 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted);
+    font-size: 12px; transition: background .2s, color .2s; }
+  #arch .arrow { color: var(--muted); font-size: 11px; }
+  #arch .node.running { border-color: var(--run); color: var(--run); animation: pulse 1s infinite; }
+  #arch .node.passed { background: var(--ok); border-color: var(--ok); color: #fff; }
+  #arch .node.blocked, #arch .node.error { background: var(--bad); border-color: var(--bad); color: #fff; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  details.turn { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-bottom: 10px; }
+  details.turn > summary { padding: 9px 12px; cursor: pointer; display: flex; gap: 8px; align-items: baseline;
+    flex-wrap: wrap; }
+  details.turn > summary .q { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+  .steps { padding: 0 12px 10px; }
+  .step { border-top: 1px solid var(--line); padding: 8px 0; }
+  .step .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .status { font-weight: 600; min-width: 64px; }
+  .status.running { color: var(--run); } .status.passed { color: var(--ok); }
+  .status.blocked, .status.error { color: var(--bad); }
+  .badge { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .detail { color: var(--muted); margin-top: 2px; }
+  .sub { margin: 6px 0 0 18px; padding-left: 10px; border-left: 2px solid var(--line); }
+  .sql { background: var(--code); padding: 6px 8px; border-radius: 5px; margin-top: 4px; overflow-x: auto;
+    white-space: pre-wrap; word-break: break-word; }
+  .bound { color: var(--accent); font-weight: 600; }
+  table { border-collapse: collapse; margin-top: 6px; font-size: 12px; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--line); padding: 3px 6px; text-align: left; vertical-align: top; }
+  th { background: var(--code); }
+  .memory { font-size: 12px; margin-top: 3px; }
+  .memory.skipped { color: var(--muted); text-decoration: line-through; }
+  a { color: var(--accent); }
+
+  @media (max-width: 760px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); }
+    #chat { border-right: 0; border-bottom: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+
+<form id="login">
+  <h1>Support Desk</h1>
+  <input id="email" type="email" placeholder="Email" autocomplete="username" required>
+  <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
+  <button type="submit">Log in</button>
+  <div class="error-text" id="login-error"></div>
+</form>
+
+<div id="app" class="hidden">
+  <header>
+    <span><strong id="who"></strong> <span class="badge" id="tier"></span></span>
+    <button class="ghost" id="logout">Log out</button>
+  </header>
+  <section id="chat">
+    <div id="messages"></div>
+    <form id="composer">
+      <input id="message" placeholder="Ask about your orders…" autocomplete="off">
+      <button type="submit" id="send">Send</button>
+    </form>
+  </section>
+  <section id="panel">
+    <!-- B-ARCH: the pipeline as boxes that light up from the stream -->
+    <div id="arch"></div>
+    <div id="turns"></div>
+  </section>
+</div>
+
+<script>
+const STAGES = ["sanitize", "judge", "guardrail", "recall", "agent", "mask", "save"];
+const $ = (id) => document.getElementById(id);
+let user = null;
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v; else if (k === "text") node.textContent = v; else node.setAttribute(k, v);
+  }
+  for (const child of children) if (child != null) node.append(child);
+  return node;
+}
+
+// ---- architecture strip (B-ARCH) ----
+function resetArch() {
+  const arch = $("arch");
+  arch.replaceChildren();
+  STAGES.forEach((key, i) => {
+    if (i) arch.append(el("span", { class: "arrow", text: "→" }));
+    arch.append(el("span", { class: "node", id: `arch-${key}`, text: key }));
+    if (key === "agent") arch.append(el("span", { class: "node", id: "arch-tools", text: "MCP tools" }));
+  });
+}
+function light(key, state) {
+  const node = $(`arch-${key}`);
+  if (node) node.className = `node ${state}`;
+}
+
+// ---- rendering helpers ----
+function sqlWithValues(info, args) {
+  // The statement with each $n replaced by the value it ran with; a bound parameter is shown
+  // as bound, because the model never chose it (§7.1). Highest $n first so $1 ≠ $10.
+  const frag = document.createDocumentFragment();
+  let sql = info.statement;
+  const marks = [];
+  info.params.map((p, i) => [p, i + 1]).reverse().forEach(([param, n]) => {
+    const token = `\u0000${n}\u0000`;
+    sql = sql.split(`$${n}`).join(token);
+    marks.push([token, param]);
+  });
+  const parts = sql.split(/(\u0000\d+\u0000)/);
+  for (const part of parts) {
+    const mark = marks.find(([token]) => token === part);
+    if (!mark) { frag.append(part); continue; }
+    const param = mark[1];
+    if (info.bound.includes(param)) frag.append(el("span", { class: "bound", text: `<bound: session email>` }));
+    else {
+      const value = args[param];
+      frag.append(typeof value === "object" ? `'${JSON.stringify(value)}'` : typeof value === "string" ? `'${value}'` : String(value));
+    }
+  }
+  return frag;
+}
+
+function cell(value) {
+  if (Array.isArray(value) && value.every((v) => v && typeof v === "object" && "product" in v))
+    return value.map((v) => `${v.qty}× ${v.product} ($${v.price})`).join(", ");
+  if (value !== null && typeof value === "object") return JSON.stringify(value);
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function table(rows) {
+  // W-4: tool results as a table, not a JSON string.
+  if (!Array.isArray(rows) || rows.length === 0) return el("div", { class: "detail", text: "0 rows" });
+  const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  return el("table", {},
+    el("thead", {}, el("tr", {}, ...columns.map((c) => el("th", { text: c })))),
+    el("tbody", {}, ...rows.map((r) => el("tr", {}, ...columns.map((c) => el("td", { text: cell(r[c]) }))))));
+}
+
+const ms = (n) => `${n.toLocaleString("en-US").replace(/,/g, " ")} ms`;
+
+// ---- one turn ----
+function startTurn(message) {
+  document.querySelectorAll("details.turn[open]").forEach((d) => d.removeAttribute("open"));
+  const summary = el("summary", {}, el("span", { class: "q", text: message }), el("span", { class: "badge", text: "running" }));
+  const steps = el("div", { class: "steps" });
+  const turn = el("details", { class: "turn", open: "" }, summary, steps);
+  $("turns").prepend(turn);
+  resetArch();
+  return { summary, steps, stages: {}, tools: {}, traceUrl: null };
+}
+
+function render(turn, e) {
+  if (e.type === "trace") {
+    turn.traceUrl = e.url;
+    turn.summary.append(el("a", { href: e.url, target: "_blank", rel: "noopener", class: "mono", text: e.turn_id }));
+  } else if (e.type === "stage") {
+    const status = el("span", { class: "status running", text: "running" });
+    const row = el("div", { class: "row" }, status, el("strong", { text: e.label }));
+    const box = el("div", { class: "step" }, row);
+    turn.steps.append(box);
+    turn.stages[e.key] = { box, row, status, sub: null };
+    light(e.key, "running");
+  } else if (e.type === "step") {
+    const stage = turn.stages[e.key];
+    stage.status.className = `status ${e.status}`;
+    stage.status.textContent = e.status;
+    stage.row.append(el("span", { class: "badge", text: e.kind }), el("span", { class: "mono", text: ms(e.ms) }),
+      el("span", { class: "badge mono", text: e.span }));
+    stage.box.append(el("div", { class: "detail", text: e.detail }));
+    for (const m of e.memories || [])
+      stage.box.append(el("div", { class: `memory ${m.inserted ? "" : "skipped"}`,
+        text: `${m.score.toFixed(2)} ${m.inserted ? "inserted" : `skipped (${m.reason})`}: ${m.memory}` }));
+    light(e.key, e.status);
+  } else if (e.type === "llm" || e.type === "tool_call" || e.type === "tool_result") {
+    const agent = turn.stages.agent;
+    if (!agent.sub) { agent.sub = el("div", { class: "sub" }); agent.box.append(agent.sub); }
+    if (e.type === "llm") {
+      agent.sub.append(el("div", { class: "detail" },
+        el("strong", { text: "llm " }), `${e.decision} · ${ms(e.ms)} · ${e.tokens_in}→${e.tokens_out} tokens · `,
+        el("span", { class: "mono", text: e.span })));
+    } else if (e.type === "tool_call") {
+      light("tools", "running");
+      const box = el("div", { class: "step" },
+        el("div", { class: "row" }, el("strong", { text: "tool" }),
+          el("code", { text: `${e.name}(${JSON.stringify(e.args)})` }),
+          e.info ? el("span", { class: "badge", text: `${e.info.kind} · ${e.info.access}` }) : null),
+        e.info ? el("div", { class: "sql mono" }, sqlWithValues(e.info, e.args)) : null);
+      agent.sub.append(box);
+      turn.tools[e.id] = box;
+    } else {
+      light("tools", e.ok ? "passed" : "error");
+      const box = turn.tools[e.id];
+      box.append(el("div", { class: "detail", text: `result · ${ms(e.ms)}${e.ok ? "" : " · error"}` }),
+        e.ok ? table(e.result) : el("div", { class: "error-text", text: String(e.result) }));
+    }
+  } else if (e.type === "final") {
+    const outcome = e.blocked ? `blocked at ${e.blocked_at}` : e.terminated;
+    turn.summary.querySelector(".badge").textContent = `${outcome} · ${ms(e.wall_clock_ms)}`;
+    addMessage(e.blocked ? "agent blocked" : "agent", e.response,
+      `${outcome} · ${ms(e.wall_clock_ms)} · ${e.tokens.in}→${e.tokens.out} tokens`, turn.traceUrl);
+  } else if (e.type === "error") {
+    const stage = turn.stages[e.step];
+    if (stage) { stage.status.className = "status error"; stage.status.textContent = "error"; }
+    light(e.step, "error");
+    turn.summary.querySelector(".badge").textContent = `error at ${e.step}`;
+    addMessage("error", e.error, `error at ${e.step} · ${e.status}`, turn.traceUrl);
+  }
+}
+
+function addMessage(kind, text, meta, traceUrl) {
+  const bubble = el("div", { class: `msg ${kind}` }, text);
+  if (meta || traceUrl) {
+    const line = el("span", { class: "meta" }, meta || "");
+    if (traceUrl) line.append(" · ", el("a", { href: traceUrl, target: "_blank", rel: "noopener", text: "trace" }));
+    bubble.append(line);
+  }
+  $("messages").append(bubble);
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+// ---- network ----
+async function postJson(path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+}
+
+async function send(message) {
+  addMessage("user", message);
+  $("send").disabled = true;
+  try {
+    const response = await postJson("/api/chat", { user_id: user.user_id, message });
+    if (!response.ok) {  // 400 / 401 / 413 arrive before any streaming (§7.2)
+      const body = await response.json().catch(() => ({}));
+      addMessage("error", body.error || `HTTP ${response.status}`, `HTTP ${response.status}`);
+      return;
+    }
+    const turn = startTurn(message);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {  // render each NDJSON line as it arrives, not after the reply (W-3)
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line) render(turn, JSON.parse(line));
+      }
+    }
+  } catch (err) {
+    addMessage("error", `Connection failed: ${err.message}`);
+  } finally {
+    $("send").disabled = false;
+    $("message").focus();
+  }
+}
+
+$("login").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("login-error").textContent = "";
+  const response = await postJson("/api/login", { email: $("email").value, password: $("password").value });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) { $("login-error").textContent = body.error || `HTTP ${response.status}`; return; }
+  user = body;
+  $("password").value = "";
+  $("who").textContent = user.full_name;
+  $("tier").textContent = user.is_premium ? "premium" : "customer";
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  resetArch();
+  $("message").focus();
+});
+
+$("composer").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const message = $("message").value.trim();
+  if (!message || $("send").disabled) return;
+  $("message").value = "";
+  send(message);
+});
+
+$("logout").addEventListener("click", async () => {
+  if (user) await postJson("/api/logout", { user_id: user.user_id });
+  user = null;
+  $("messages").replaceChildren();
+  $("turns").replaceChildren();
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+});
+</script>
+</body>
+</html>

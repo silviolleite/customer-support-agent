@@ -10,4 +10,5 @@ openinference-semantic-conventions==0.1.41       # stage 5: span kinds and attri
 uvicorn==0.54.0                                  # stage 6: serves the A2A guard services
 httpx==0.28.1                                    # stage 6: the pipeline's A2A client
 mem0ai==2.2.1                                    # stage 8: long-term memory (R-1 to R-7)
+fastapi==0.141.1                                 # stage 9: the web front end (SPEC §7.2)
 # Phoenix runs in its own venv (.venv-phoenix): python3 -m venv .venv-phoenix && .venv-phoenix/bin/pip install arize-phoenix==20.20.0

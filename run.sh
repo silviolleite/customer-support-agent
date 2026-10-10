@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One entry point for every service, started in dependency order (TECHNICAL §5).
-# Stage 8: database, MCP Toolbox, Security Judge, Data Masker, Phoenix. Stage 9 adds the web.
+# Order (TECHNICAL §5): Postgres -> Toolbox -> Judge -> Masker -> Phoenix -> web on :8000.
 # Background services write logs/<name>.log and logs/<name>.pid.
 #
 #   ./run.sh start    start every service, waiting for each to be healthy
@@ -159,14 +159,45 @@ phoenix_status() {
   if phoenix_healthy; then ok "phoenix on :${PHOENIX_PORT}"; else fail "phoenix down"; return 1; fi
 }
 
+# --- web front end ------------------------------------------------------------
+WEB_PORT=8000
+
+web_healthy() {
+  curl -sf "http://127.0.0.1:${WEB_PORT}/" >/dev/null
+}
+
+web_start() {
+  if web_healthy; then ok "web on http://127.0.0.1:${WEB_PORT}"; return 0; fi
+  mkdir -p logs
+  setsid nohup .venv/bin/python -m support.web >logs/web.log 2>&1 &
+  echo $! >logs/web.pid
+  printf '  waiting for web'
+  for _ in $(seq 1 60); do
+    if web_healthy; then echo; ok "web on http://127.0.0.1:${WEB_PORT}"; return 0; fi
+    printf '.'; sleep 1
+  done
+  echo; fail "web did not start"; tail -20 logs/web.log; exit 1
+}
+
+web_stop() {
+  if [[ -f logs/web.pid ]]; then
+    kill -- "-$(cat logs/web.pid)" 2>/dev/null || true
+    rm -f logs/web.pid
+  fi
+}
+
+web_status() {
+  if web_healthy; then ok "web on http://127.0.0.1:${WEB_PORT}"; else fail "web down"; return 1; fi
+}
+
 # --- commands ---------------------------------------------------------------
 case "${1:-}" in
   start)  db_start; toolbox_start; a2a_start judge "$JUDGE_PORT" guards.judge.server
-          a2a_start masker "$MASKER_PORT" guards.masker.server; phoenix_start ;;
+          a2a_start masker "$MASKER_PORT" guards.masker.server; phoenix_start; web_start ;;
   # The CLI never stops Phoenix; only this explicit command does (O-1).
-  stop)   phoenix_stop; a2a_stop masker; a2a_stop judge; toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
+  stop)   web_stop; phoenix_stop; a2a_stop masker; a2a_stop judge; toolbox_stop; docker compose stop >/dev/null; ok "stopped" ;;
   status) rc=0; db_status || rc=1; toolbox_status || rc=1; a2a_status judge "$JUDGE_PORT" || rc=1
-          a2a_status masker "$MASKER_PORT" || rc=1; phoenix_status || rc=1; exit $rc ;;
+          a2a_status masker "$MASKER_PORT" || rc=1; phoenix_status || rc=1; web_status || rc=1; exit $rc ;;
   # The Toolbox's connections die with the old database, so it restarts with it.
   reset)  toolbox_stop; db_reset; toolbox_start ;;
   psql)   shift; psql_admin "$@" ;;
