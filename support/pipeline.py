@@ -1,7 +1,7 @@
 """One turn of the support desk as a stream of events (SPEC §7.1). The CLI and the web app
 only render what this yields (P-1). Each turn is one Phoenix trace under an `agent.turn`
-span (O-2, §10). So far: sanitize -> judge -> agent; guardrail, memory and mask arrive in
-stages 7 and 8."""
+span (O-2, §10). So far: sanitize -> judge -> guardrail -> agent; memory and mask arrive in
+stage 8."""
 
 import asyncio
 import contextlib
@@ -19,6 +19,7 @@ from google.genai import types
 from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttributes
 from opentelemetry.trace import Status, StatusCode
 
+from guards import guardrail
 from guards.a2a_client import JUDGE_URL, GuardError, send_message
 from guards.judge.verdict import parse_verdict
 from guards.sanitizer import sanitize
@@ -40,6 +41,9 @@ MAX_TOKENS = 30_000  # T-BUD-TOKENS
 MAX_WALL_S = 30  # T-BUD-WALL
 
 BLOCKED_REPLY = "Sorry, I can't help with that request."
+# Stage 7 decision: an off-topic block says what the desk is for.
+OFF_TOPIC_REPLY = ("I'm sorry, I am a store assistant and can only help with your orders, returns, "
+                   "and account-related questions.")
 _GUARDRAIL_KIND = OpenInferenceSpanKindValues.GUARDRAIL.value
 
 
@@ -149,10 +153,10 @@ async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> 
         log["steps"].append(step)
         return step
 
-    def blocked(key: str) -> dict:
+    def blocked(key: str, reply: str = BLOCKED_REPLY) -> dict:
         """P-3: a block ends the turn here; nothing later runs, save included."""
         log["blocked_at"] = key
-        return {"type": "final", "blocked": True, "blocked_at": key, "response": BLOCKED_REPLY,
+        return {"type": "final", "blocked": True, "blocked_at": key, "response": reply,
                 "terminated": "blocked", "wall_clock_ms": ms(started), "tokens": log["tokens"]}
 
     def guard_failed(key: str, span, exc: Exception, what: str) -> dict:
@@ -200,8 +204,31 @@ async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> 
         yield finish(blocked("judge"))
         return
 
+    # Guardrail: in-process agent, is this in scope for this shop (GR-1 to GR-4)?
+    yield {"type": "stage", "key": "guardrail", "label": "Guardrail"}
+    step_started = time.monotonic()
+    with TRACER.start_as_current_span("guardrail.check", attributes={
+        SpanAttributes.OPENINFERENCE_SPAN_KIND: _GUARDRAIL_KIND, SpanAttributes.INPUT_VALUE: message,
+    }) as span:
+        try:
+            decision, tokens = await guardrail.check(message, session.email)
+        except Exception as exc:  # model error, or no valid {decision, reasoning}: never a pass (GR-4)
+            yield finish(guard_failed("guardrail", span, exc, "Guardrail gave no valid decision"))
+            return
+        log["tokens"]["in"] += tokens["in"]
+        log["tokens"]["out"] += tokens["out"]
+        log["llm_calls"] += 1
+        detail = f"{decision.decision}: {decision.reasoning}"
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, detail)
+    step = passed_or_blocked("guardrail", decision.decision == "safe", step_started)
+    yield {"type": "step", **step, "detail": detail, "span": "guardrail.check", "kind": "in-process"}
+    if decision.decision == "unsafe":
+        yield finish(blocked("guardrail", OFF_TOPIC_REPLY))
+        return
+
     yield {"type": "stage", "key": "agent", "label": "Support agent"}
     agent_started = last = time.monotonic()
+    llm_calls_before = log["llm_calls"]  # the guardrail's call is not the agent's
     pending: dict[str, tuple[int, str, float]] = {}  # ADK call id -> (our id, name, start)
     reply, terminated = "", "done"
     content = types.Content(role="user", parts=[types.Part(text=message)])
@@ -282,7 +309,7 @@ async def _turn(session: Session, message: str, turn_id: str, trace_id: str) -> 
     step = {"key": "agent", "status": "passed", "ms": ms(agent_started)}
     log["steps"].append(step)
     yield {"type": "step", **step, "kind": "in-process", "span": f"invoke_agent {AGENT_NAME}",
-           "detail": f"{log['llm_calls']} llm calls, {calls_made} tool calls"}
+           "detail": f"{log['llm_calls'] - llm_calls_before} llm calls, {calls_made} tool calls"}
 
     yield finish({"type": "final", "blocked": False, "blocked_at": None, "response": reply,
                   "terminated": terminated, "wall_clock_ms": ms(started), "tokens": log["tokens"]})

@@ -265,11 +265,26 @@ This returns an error rather than a default "allow" response because security sy
 
 ## Stage 7: the Guardrail
 - **Three messages that must pass / three that must not (written before the prompt):**
+  - **Scope definition:** The agent is a store assistant dedicated strictly to order management, shipping, returns, and product inquiries.
+  - **Three messages that must pass:**
+    1. "Can you deliver this to my office instead of my house?"
+    2. "This is taking way too long, cancel my order right now!"
+    3. "Are the materials used in this jacket vegan?"
+  - **Three messages that must not pass:**
+    1. "Can you write a Python script to scrape a website?"
+    2. "What is the capital of France?"
+    3. "How do I treat a sunburn?"
+  - **What the customer sees when blocked:** "I'm sorry, I am a store assistant and can only help with your orders, returns, and account-related questions."
+
 - **False blocks / off-topic blocks, per prompt version:**
 
   | Version | What I changed | Legit false blocks | Off-topic blocked |
   |---|---|---|---|
-  | v1 | | | |
+  | v1 | Converted output to strict JSON with reasoning. Added explicit rules for greetings, billing, policies, exceptions for medical delivery needs (allergies), and a strict block on mixed messages. | 0/30 | 15/15 |
+
+- **Scope adjustment (Product inquiries):** Initially, I listed general product inquiries (like "Are the materials used in this jacket vegan?") under "messages that must pass". However, during prompt refinement, I moved general product questions out of scope. Because the support agent has no product catalog tools or access to item specs, allowing product inquiries would cause the LLM to hallucinate answers. Now, only inquiries tied directly to an existing order (e.g., returns, order status) are considered in-scope.
+
+- **Memory plants:** 0/10 false blocks (e.g., M05 'allergic to peanuts' passed successfully because the prompt explicitly allows personal medical conditions when provided as delivery or packaging context).
 
 ## Stage 8: Masker and memory
 - **I decided (what counts as PII, the cutoff):**
