@@ -114,8 +114,131 @@ Agent: I can only look up orders for the logged-in customer, Alice Jones. I cann
 
 ## Stage 4: the pipeline and its events
 - **My hand-sketched CLI lines:**
-- **I predicted the first event after the agent stage would be:**
+  - Passed step: `[judge] passed · 2 160 ms · security.a2a_judge`
+  - Tool call:   `[tool] called · 450 ms · get-order-status({"order_id": 5})`
+  - Recall:      `[recall] fetched · 890 ms · ["refund policy", "return timeline"]`
+  - Blocked:     `[judge] BLOCKED · 1 120 ms · security.a2a_judge - "Unauthorized cross-tenant access attempt"`
+- **I predicted the first event after the agent stage would be:** LLM
 - **What happened:**
+```
+echo "What is the status of order 3?" | CS_PASSWORD=alice .venv/bin/python -m support.cli --user alice.jones@example.com --events | jq -c '{type, name, key}'
+ls runs/ && cat runs/*.json
+
+Hello, Alice Jones. Type quit to leave.
+{"type":"trace","name":null,"key":null}
+{"type":"stage","name":null,"key":"agent"}
+10:36:13 - LiteLLM:WARNING: get_model_cost_map.py:315 - LiteLLM: model cost map fetch attempt 1/3 failed (ConnectError fetching https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json: [Errno -3] Temporary failure in name resolution); retrying in 2.8s
+10:36:13 - LiteLLM:WARNING: get_model_cost_map.py:672 - LiteLLM: Failed to fetch remote model cost map from https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json: ConnectError fetching https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json: [Errno -3] Temporary failure in name resolution. Falling back to local backup.
+{"type":"llm","name":null,"key":null}
+{"type":"tool_call","name":"get-order-status","key":null}
+{"type":"tool_result","name":"get-order-status","key":null}
+{"type":"llm","name":null,"key":null}
+{"type":"step","name":null,"key":"agent"}
+{"type":"final","name":null,"key":null}
+turn_bb153afa41064367.json
+{
+  "turn_id": "turn_bb153afa41064367",
+  "trace_id": null,
+  "user": "alice.jones@example.com",
+  "message": "What is the status of order 3?",
+  "terminated": "done",
+  "blocked_at": null,
+  "wall_clock_ms": 24713,
+  "tokens": {
+    "in": 1568,
+    "out": 17
+  },
+  "steps": [
+    {
+      "key": "agent",
+      "status": "passed",
+      "ms": 24713
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "get-order-status",
+      "ok": true,
+      "ms": 11
+    }
+  ],
+  "llm_calls": 2
+}% 
+```
+After fix
+```
+echo "What is the status of order 3?" | CS_PASSWORD=alice .venv/bin/python -m support.cli --user alice.jones@example.com --events | jq -c '{type, name, key}'
+ls runs/ && cat runs/*.json
+
+Hello, Alice Jones. Type quit to leave.
+{"type":"trace","name":null,"key":null}
+{"type":"stage","name":null,"key":"agent"}
+{"type":"llm","name":null,"key":null}
+{"type":"tool_call","name":"get-order-status","key":null}
+{"type":"tool_result","name":"get-order-status","key":null}
+{"type":"llm","name":null,"key":null}
+{"type":"step","name":null,"key":"agent"}
+{"type":"final","name":null,"key":null}
+turn_bb153afa41064367.json  turn_d42b8fd12ea4492e.json
+{
+  "turn_id": "turn_bb153afa41064367",
+  "trace_id": null,
+  "user": "alice.jones@example.com",
+  "message": "What is the status of order 3?",
+  "terminated": "done",
+  "blocked_at": null,
+  "wall_clock_ms": 24713,
+  "tokens": {
+    "in": 1568,
+    "out": 17
+  },
+  "steps": [
+    {
+      "key": "agent",
+      "status": "passed",
+      "ms": 24713
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "get-order-status",
+      "ok": true,
+      "ms": 11
+    }
+  ],
+  "llm_calls": 2
+}{
+  "turn_id": "turn_d42b8fd12ea4492e",
+  "trace_id": null,
+  "user": "alice.jones@example.com",
+  "message": "What is the status of order 3?",
+  "terminated": "done",
+  "blocked_at": null,
+  "wall_clock_ms": 5321,
+  "tokens": {
+    "in": 1568,
+    "out": 32
+  },
+  "steps": [
+    {
+      "key": "agent",
+      "status": "passed",
+      "ms": 5321
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "get-order-status",
+      "ok": true,
+      "ms": 9
+    }
+  ],
+  "llm_calls": 2
+}%  
+```
+
+- **Analysis of the result:** My prediction was correct. Looking at the JSON output, right after the stage started (`{"type":"stage","key":"agent"}`), the very first event emitted was indeed `{"type":"llm"}`, confirming that the agent immediately calls the LLM before any tool usage.
+- **The latency finding:** The logs revealed a massive performance bottleneck on the first run, which took 24.7 seconds (`24713 ms`). The CLI output shows exactly why: LiteLLM was hanging while trying to fetch `model_prices_and_context_window.json` from GitHub, eventually timing out due to a DNS resolution error. After applying the fix (bypassing/disabling this external fetch), the latency plummeted to ~5.3 seconds (`5321 ms` in the second log, a drop of nearly 20 seconds). This proves how synchronous external network dependencies during LLM initialization can severely degrade the pipeline's performance.
 
 ## Stage 5: one trace per turn
 - **I decided (what goes in span attributes, who can see Phoenix):**

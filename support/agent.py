@@ -1,11 +1,12 @@
 """The support agent: one LlmAgent per logged-in customer, with that customer's email bound
 into its tools (stage 3 decision: a fixed value at login, not a per-turn lookup)."""
 
+# support.config first: it sets LiteLLM's environment before litellm is imported.
+from support.config import MODEL, SESSION_EMAIL_PARAMS, SUPPORT_TOOLSET, TOOLBOX_URL  # isort: skip
+
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from toolbox_adk import ToolboxToolset
-
-from support.config import MODEL, SESSION_EMAIL_PARAMS, SUPPORT_TOOLSET, TOOLBOX_URL
 
 AGENT_NAME = "support_agent"
 
